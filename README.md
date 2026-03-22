@@ -26,10 +26,10 @@ ap-northeast-1,Aurora,db.r5.large,aurora-mysql,no,3,3,No Upfront
 - `engine`: 以下のいずれか
   - OSS系: aurora-mysql, aurora-postgresql, mysql, postgresql, mariadb
   - Oracle: oracle-se2, oracle-ee, oracle-se2-byol, oracle-ee-byol
-  - RDS Custom (Oracle): custom-oracle-ee-byol, custom-oracle-se2-byol
-  - SQL Server: sqlserver-ex, sqlserver-ee, sqlserver-se, sqlserver-web, sqlserver-ee-byol, sqlserver-se-byol
-  - RDS Custom (SQL Server): custom-sqlserver-ee, custom-sqlserver-se, custom-sqlserver-web, custom-sqlserver-ee-byol, custom-sqlserver-se-byol
+  - SQL Server: sqlserver-ee, sqlserver-se, sqlserver-web, sqlserver-ee-byol, sqlserver-se-byol
   - Db2: db2-ae, db2-ae-byol, db2-se, db2-se-byol
+  - ※ SQL Server Express (sqlserver-ex) はRI非対応のため使用不可
+  - ※ RDS Custom (custom-*) はRI非対応のため使用不可
 - `multi_az`: yes または no（Aurora の場合は無視）
 - `quantity`: 購入数量（上限: 50）
 - `duration`: 1 または 3（年）
@@ -81,6 +81,7 @@ cat ri_purchase_result_*.txt
 - **データ行数上限超過** → エラーメッセージ表示後終了
 - **不正なインスタンスクラス形式** → 該当行をスキップ
 - **無効なエンジン名** → 該当行をスキップ
+- **RI非対応エンジン（sqlserver-ex, custom-*）** → 明確な理由を表示してスキップ
 - **リージョン制限違反** → 該当行をスキップ
 - **支払いオプション制限違反** → 該当行をスキップ
 - **無効な数量/期間** → 該当行をスキップ
