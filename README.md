@@ -25,12 +25,12 @@ ap-northeast-1,Aurora,db.r5.large,aurora-mysql,no,3,3,No Upfront
 - `instance_class`: db.xxx.xxx 形式
 - `engine`: 以下のいずれか
   - OSS系: aurora-mysql, aurora-postgresql, mysql, postgresql, mariadb
-  - Oracle: oracle-se2, oracle-ee, oracle-se2-byol, oracle-ee-byol
-  - SQL Server: sqlserver-ee, sqlserver-se, sqlserver-web, sqlserver-ee-byol, sqlserver-se-byol
+  - Oracle: oracle-se2, oracle-se2-byol, oracle-ee-byol（Oracle EE は BYOL のみ）
+  - SQL Server: sqlserver-ee, sqlserver-se, sqlserver-web（ライセンス込みのみ）
   - Db2: db2-ae, db2-ae-byol, db2-se, db2-se-byol
   - ※ SQL Server Express (sqlserver-ex) はRI非対応のため使用不可
   - ※ RDS Custom (custom-*) はRI非対応のため使用不可
-- `multi_az`: yes または no（Aurora の場合は無視）
+- `multi_az`: yes または no（RDS では必須。Aurora の場合は無視、空欄も可）
 - `quantity`: 購入数量（上限: 50）
 - `duration`: 1 または 3（年）
 - `payment_option`: No Upfront のみ
@@ -122,7 +122,7 @@ cat ri_purchase_result_*.txt
 
 ### ロックファイルエラー
 bash
-rm -rf /tmp/rds_ri_purchase_lock
+rm -rf ~/.rds_ri_purchase_lock
 
 ### AWS CLI エラー
 bash

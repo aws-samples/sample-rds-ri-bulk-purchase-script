@@ -2,7 +2,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-# RDS/Aurora Reserved Instance 一括購入スクリプト v3.7 (Security Reviewed)
+# RDS/Aurora Reserved Instance 一括購入スクリプト v3.8 (Security Reviewed)
 
 set -euo pipefail
 
@@ -24,24 +24,31 @@ show_usage() {
   exit 1
 }
 
-# CSVのengine値からAPI用のproduct-description値へ変換
-# APIフィルタで受け付ける値とレスポンスに返る値が異なるため、マッピングが必要
-# 例: CSV "oracle-se2" → API filter "oracle-se2" → レスポンス "oracle-se2(li)"
-#     CSV "oracle-se2-byol" → API filter "oracle-se2-byol" → レスポンス "oracle-se2 (byol)"
-map_product_description() {
-  local engine=$1
-  case "$engine" in
-    aurora-mysql|aurora-postgresql|mysql|postgresql|mariadb) echo "$engine" ;;
-    oracle-se2|oracle-ee|sqlserver-ee|sqlserver-se|sqlserver-web) echo "$engine" ;;
-    oracle-se2-byol|oracle-ee-byol) echo "$engine" ;;
-    sqlserver-ee-byol|sqlserver-se-byol) echo "$engine" ;;
-    db2-ae|db2-ae-byol|db2-se|db2-se-byol) echo "$engine" ;;
-    *) echo "" ;;  # 未知のエンジンは空文字を返す（validate_lineで排除済みだが防御的に）
+# CSVのengine値から、API検索用のフィルタ値と、期待する ProductDescription（完全一致）を求める
+# --product-description フィルタは部分一致のため、例えば "oracle-se2" で検索すると
+# "oracle-se2(li)" と "oracle-se2 (byol)" の両方が返る。先頭1件を使うと意図しない
+# ライセンスモデルを購入しうるため、レスポンスの ProductDescription を完全一致で絞り込む。
+# リージョンにより表記の空白が異なる（東京 "oracle-se2 (byol)" / 大阪 "oracle-se2 (li)" など）ため、
+# 空白を除去した値で比較する。値は ap-northeast-1 / ap-northeast-3 の実レスポンスで確認済み。
+api_filter_engine() {
+  echo "${1%-byol}"
+}
+
+expected_product_description() {
+  case "$1" in
+    aurora-mysql|aurora-postgresql|mysql|postgresql|mariadb) echo "$1" ;;
+    oracle-se2) echo "oracle-se2(li)" ;;
+    oracle-se2-byol) echo "oracle-se2(byol)" ;;
+    oracle-ee-byol) echo "oracle-ee(byol)" ;;
+    sqlserver-ee|sqlserver-se|sqlserver-web) echo "$1(li)" ;;
+    db2-ae|db2-se) echo "$1(mpl)" ;;
+    db2-ae-byol|db2-se-byol) echo "${1%-byol}(byol)" ;;
+    *) echo "" ;;  # RIが存在しない組み合わせ（oracle-ee LI、RDS for SQL Server BYOL など）
   esac
 }
 
 validate_line() {
-  local region=$1 db_type=$2 instance_class=$3 engine=$4 payment=$5 quantity=$6 duration_years=$7
+  local region=$1 db_type=$2 instance_class=$3 engine=$4 payment=$5 quantity=$6 duration_years=$7 multi_az=$8
 
   [[ ! "$instance_class" =~ ^db\.[a-z0-9]+\.[a-z0-9]+$ ]] && echo "インスタンスクラス形式が無効: $instance_class" && return 1
 
@@ -50,9 +57,10 @@ validate_line() {
   # - custom-* (RDS Custom) はRI非対応のため除外
   case "$engine" in
     aurora-mysql|aurora-postgresql|mysql|postgresql|mariadb) ;;
-    oracle-se2|oracle-se2-byol|oracle-ee|oracle-ee-byol) ;;
+    oracle-se2|oracle-se2-byol|oracle-ee-byol) ;;
+    oracle-ee) echo "RI非対応: Oracle EE はライセンス込み(LI)のRIがありません。BYOLの場合は oracle-ee-byol を指定してください" && return 1 ;;
     sqlserver-ee|sqlserver-se|sqlserver-web) ;;
-    sqlserver-ee-byol|sqlserver-se-byol) ;;
+    sqlserver-ee-byol|sqlserver-se-byol) echo "RI非対応: RDS for SQL Server にBYOLのRIはありません: $engine" && return 1 ;;
     db2-ae|db2-ae-byol|db2-se|db2-se-byol) ;;
     sqlserver-ex) echo "RI非対応: SQL Server Express はRI購入の対象外です" && return 1 ;;
     custom-*) echo "RI非対応: RDS Custom ($engine) はRI購入の対象外です" && return 1 ;;
@@ -71,6 +79,12 @@ validate_line() {
   fi
   [ "$duration_years" != "1" ] && [ "$duration_years" != "3" ] && echo "期間が無効: $duration_years" && return 1
   [ "$db_type" != "RDS" ] && [ "$db_type" != "Aurora" ] && echo "DB種別が無効: $db_type" && return 1
+  # multi_az は RDS では yes/no 必須（タイプミスを Single-AZ として購入しないため）。Aurora では無視するが値は yes/no/空 のみ許可
+  if [ "$db_type" = "RDS" ]; then
+    [ "$multi_az" != "yes" ] && [ "$multi_az" != "no" ] && echo "multi_azが無効: '$multi_az' (yes または no)" && return 1
+  else
+    [ -n "$multi_az" ] && [ "$multi_az" != "yes" ] && [ "$multi_az" != "no" ] && echo "multi_azが無効: '$multi_az' (yes / no / 空)" && return 1
+  fi
 
   return 0
 }
@@ -100,16 +114,20 @@ if [ "$DATA_LINE_COUNT" -gt "$MAX_DATA_LINES" ]; then
 fi
 
 # ロックディレクトリによる並行実行防止
-# 1時間以上経過したロックは古いプロセスの残存とみなし自動解除
-LOCK_DIR="/tmp/rds_ri_purchase_lock"
-if [ -d "$LOCK_DIR" ]; then
-  LOCK_AGE=$(( $(date +%s) - $(stat -c %Y "$LOCK_DIR" 2>/dev/null || stat -f %m "$LOCK_DIR" 2>/dev/null || echo "0") ))
-  if [ "$LOCK_AGE" -gt 3600 ]; then
-    echo -e "${YELLOW}⚠ 古いロックファイルを自動解除しました（${LOCK_AGE}秒経過）${NC}"
+# 他ユーザーに先取りされないよう実行ユーザーのホーム配下に置き、PIDで生存確認する
+# （経過時間ではなく、ロックを作ったプロセスが終了している場合のみ自動解除）
+LOCK_DIR="${HOME}/.rds_ri_purchase_lock"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  LOCK_PID=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+  if [[ "$LOCK_PID" =~ ^[0-9]+$ ]] && ! kill -0 "$LOCK_PID" 2>/dev/null; then
+    echo -e "${YELLOW}⚠ 終了済みプロセス(PID ${LOCK_PID})のロックを解除しました${NC}"
     rm -rf "$LOCK_DIR"
+    ! mkdir "$LOCK_DIR" 2>/dev/null && echo -e "${RED}エラー: ロックを取得できません${NC}" && exit 1
+  else
+    echo -e "${RED}エラー: 既に実行中です（ロック: ${LOCK_DIR}）${NC}" && exit 1
   fi
 fi
-! mkdir "$LOCK_DIR" 2>/dev/null && echo -e "${RED}エラー: 既に実行中です${NC}" && exit 1
+echo "$$" > "$LOCK_DIR/pid"
 trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
 
 echo -e "${YELLOW}サンプルスクリプト - 使用は自己責任でお願いします${NC}\n"
@@ -117,7 +135,7 @@ echo -e "${YELLOW}サンプルスクリプト - 使用は自己責任でお願�
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 EXECUTION_TIME=$(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S')
 
-echo -e "${CYAN}RDS/Aurora RI 購入スクリプト v3.7${NC}"
+echo -e "${CYAN}RDS/Aurora RI 購入スクリプト v3.8${NC}"
 echo -e "アカウント: ${GREEN}${ACCOUNT_ID}${NC}"
 echo -e "入力: ${GREEN}${INPUT_FILE}${NC}"
 if [ "$DRY_RUN" = true ]; then
@@ -162,7 +180,7 @@ while IFS=',' read -r REGION DB_TYPE DB_INSTANCE_CLASS ENGINE MULTI_AZ_INPUT QUA
 
   echo -e "${CYAN}[行 $LINE_NUM]${NC} $REGION, $DB_TYPE, $DB_INSTANCE_CLASS, $ENGINE, x$QUANTITY, ${DURATION_YEARS}年"
 
-  if ! VALIDATION_ERROR=$(validate_line "$REGION" "$DB_TYPE" "$DB_INSTANCE_CLASS" "$ENGINE" "$PAYMENT_OPTION" "$QUANTITY" "$DURATION_YEARS" 2>&1); then
+  if ! VALIDATION_ERROR=$(validate_line "$REGION" "$DB_TYPE" "$DB_INSTANCE_CLASS" "$ENGINE" "$PAYMENT_OPTION" "$QUANTITY" "$DURATION_YEARS" "$MULTI_AZ_INPUT" 2>&1); then
     echo -e "  ${RED}✗ $VALIDATION_ERROR${NC}"
     RESULTS+=("行 $LINE_NUM: SKIP - $VALIDATION_ERROR")
     SKIP_COUNT=$((SKIP_COUNT + 1))
@@ -175,13 +193,20 @@ while IFS=',' read -r REGION DB_TYPE DB_INSTANCE_CLASS ENGINE MULTI_AZ_INPUT QUA
     MULTI_AZ_FLAG="--no-multi-az"
     MULTI_AZ_BOOL="false"
   else
-    [ "$MULTI_AZ_INPUT" = "yes" ] && MULTI_AZ_FLAG="--multi-az" && MULTI_AZ_BOOL="true" || MULTI_AZ_FLAG="--no-multi-az" && MULTI_AZ_BOOL="false"
+    if [ "$MULTI_AZ_INPUT" = "yes" ]; then
+      MULTI_AZ_FLAG="--multi-az"
+      MULTI_AZ_BOOL="true"
+    else
+      MULTI_AZ_FLAG="--no-multi-az"
+      MULTI_AZ_BOOL="false"
+    fi
   fi
 
   # CSVのengine値からAPI用のproduct-description値へ変換
-  PRODUCT_DESC=$(map_product_description "$ENGINE")
+  API_ENGINE=$(api_filter_engine "$ENGINE")
+  PRODUCT_DESC=$(expected_product_description "$ENGINE")
 
-  # map_product_descriptionが空文字を返した場合はスキップ（防御的チェック）
+  # 期待する ProductDescription が求まらない場合はスキップ（validate_lineで排除済みだが防御的に）
   if [ -z "$PRODUCT_DESC" ]; then
     echo -e "  ${RED}✗ エンジン名のマッピングに失敗: $ENGINE${NC}"
     RESULTS+=("行 $LINE_NUM: SKIP - エンジン名マッピング失敗: $ENGINE")
@@ -193,17 +218,17 @@ while IFS=',' read -r REGION DB_TYPE DB_INSTANCE_CLASS ENGINE MULTI_AZ_INPUT QUA
   # shellcheck disable=SC2086
   # offering-type は防御的にハードコード（validate_lineで No Upfront 以外は既に排除済みだが、
   # 万が一バリデーションにバグがあっても意図しない前払い購入を防止するため）
-  # 全検索条件を指定しているため返されるオファリングは通常1件に絞り込まれる（[0]で問題なし）
+  # フィルタは部分一致のため、ProductDescription を完全一致で絞り込み、ちょうど1件の場合のみ採用する
   OFFERINGS=$(aws rds describe-reserved-db-instances-offerings \
     --region "${REGION}" \
     --db-instance-class "${DB_INSTANCE_CLASS}" \
-    --product-description "${PRODUCT_DESC}" \
+    --product-description "${API_ENGINE}" \
     ${MULTI_AZ_FLAG} \
     --duration "${DURATION}" \
     --offering-type "No Upfront" \
-    --query 'ReservedDBInstancesOfferings[0].[ReservedDBInstancesOfferingId,FixedPrice,RecurringCharges[0].RecurringChargeAmount,CurrencyCode]' \
+    --query 'ReservedDBInstancesOfferings[].[ReservedDBInstancesOfferingId,FixedPrice,RecurringCharges[0].RecurringChargeAmount,CurrencyCode,ProductDescription]' \
     --output json 2>&1) || {
-    if echo "$OFFERINGS" | grep -qE 'ExpiredToken|AccessDenied|AuthFailure'; then
+    if echo "$OFFERINGS" | grep -qE 'ExpiredToken|AccessDenied|AuthFailure|InvalidClientTokenId|UnrecognizedClientException|SignatureDoesNotMatch|UnauthorizedOperation'; then
       echo -e "  ${RED}✗ 認証エラーが発生しました。スクリプトを終了します${NC}"
       exit 1
     fi
@@ -217,12 +242,22 @@ while IFS=',' read -r REGION DB_TYPE DB_INSTANCE_CLASS ENGINE MULTI_AZ_INPUT QUA
     continue
   fi
 
-  OFFERING_ID=$(echo "$OFFERINGS" | jq -r '.[0]')
-  FIXED_PRICE=$(echo "$OFFERINGS" | jq -r '.[1]')
-  RECURRING_PRICE=$(echo "$OFFERINGS" | jq -r '.[2]')
-  CURRENCY=$(echo "$OFFERINGS" | jq -r '.[3]')
+  # ProductDescription を空白除去して完全一致する候補だけを残す
+  OFFERINGS=$(echo "$OFFERINGS" | jq -c --arg pd "$PRODUCT_DESC" '[.[] | select((.[4] | gsub(" "; "")) == $pd)]')
+  OFFERING_COUNT=$(echo "$OFFERINGS" | jq 'length')
+  if [ "$OFFERING_COUNT" != "1" ]; then
+    echo -e "  ${RED}✗ Offering が一意に決まりません（${OFFERING_COUNT}件, ${PRODUCT_DESC}）${NC}"
+    RESULTS+=("行 $LINE_NUM: FAIL - Offering not unique (${OFFERING_COUNT}件, ${PRODUCT_DESC})")
+    SKIP_COUNT=$((SKIP_COUNT + 1))
+    continue
+  fi
 
-  echo -e "  ${GREEN}✓ Offering: $OFFERING_ID (前払: $FIXED_PRICE $CURRENCY, 時間単価: $RECURRING_PRICE $CURRENCY)${NC}"
+  OFFERING_ID=$(echo "$OFFERINGS" | jq -r '.[0][0]')
+  FIXED_PRICE=$(echo "$OFFERINGS" | jq -r '.[0][1]')
+  RECURRING_PRICE=$(echo "$OFFERINGS" | jq -r '.[0][2]')
+  CURRENCY=$(echo "$OFFERINGS" | jq -r '.[0][3]')
+
+  echo -e "  ${GREEN}✓ Offering: $OFFERING_ID [$PRODUCT_DESC] (前払: $FIXED_PRICE $CURRENCY, 時間単価: $RECURRING_PRICE $CURRENCY)${NC}"
 
   # describe-db-instancesのEngine値はライセンスモデルに依存しない（例: oracle-se2はLI/BYOL共通）
   # RI OfferingのCSV engine値（oracle-se2-byol等）からベースエンジン名を抽出して検索する
@@ -237,11 +272,10 @@ while IFS=',' read -r REGION DB_TYPE DB_INSTANCE_CLASS ENGINE MULTI_AZ_INPUT QUA
       RUNNING_COUNT="-"
     }
   else
-    # MultiAZはbool型のため、JMESPathのバッククォートリテラル（文字列）とは一致しない
-    # to_string()で文字列に変換してから比較する
+    # MultiAZ は bool 型。JMESPath のバッククォートは JSON リテラルなので `true`/`false` は bool として比較される
     # AWS CLI v2のクライアントサイド自動ページネーションにより全件取得される
     RUNNING_COUNT=$(aws rds describe-db-instances --region "${REGION}" \
-      --query "DBInstances[?DBInstanceClass==\`${DB_INSTANCE_CLASS}\` && Engine==\`${SEARCH_ENGINE}\` && to_string(MultiAZ)==\`${MULTI_AZ_BOOL}\` && DBInstanceStatus==\`available\`] | length(@)" \
+      --query "DBInstances[?DBInstanceClass==\`${DB_INSTANCE_CLASS}\` && Engine==\`${SEARCH_ENGINE}\` && MultiAZ==\`${MULTI_AZ_BOOL}\` && DBInstanceStatus==\`available\`] | length(@)" \
       --output text 2>&1) || {
       echo -e "  ${YELLOW}⚠ 稼働インスタンス数の取得に失敗しました${NC}"
       RUNNING_COUNT="-"
@@ -331,6 +365,8 @@ echo -e "${CYAN}購入結果${NC}"
 echo -e "  成功: ${GREEN}$SUCCESS_COUNT${NC}, 失敗: ${RED}$FAIL_COUNT${NC}"
 echo ""
 
+# 結果ファイル（アカウントIDを含む）は作成時点から本人のみ読み書き可能にする
+umask 077
 RESULT_FILE="ri_purchase_result_$(TZ=Asia/Tokyo date +%Y%m%d_%H%M%S).txt"
 {
   echo "RDS Reserved Instance 購入結果"
