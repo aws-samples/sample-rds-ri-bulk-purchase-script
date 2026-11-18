@@ -113,22 +113,29 @@ if [ "$DATA_LINE_COUNT" -gt "$MAX_DATA_LINES" ]; then
   exit 1
 fi
 
-# ロックディレクトリによる並行実行防止
-# 他ユーザーに先取りされないよう実行ユーザーのホーム配下に置き、PIDで生存確認する
-# （経過時間ではなく、ロックを作ったプロセスが終了している場合のみ自動解除）
-LOCK_DIR="${HOME}/.rds_ri_purchase_lock"
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-  LOCK_PID=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
-  if [[ "$LOCK_PID" =~ ^[0-9]+$ ]] && ! kill -0 "$LOCK_PID" 2>/dev/null; then
-    echo -e "${YELLOW}⚠ 終了済みプロセス(PID ${LOCK_PID})のロックを解除しました${NC}"
-    rm -rf "$LOCK_DIR"
-    ! mkdir "$LOCK_DIR" 2>/dev/null && echo -e "${RED}エラー: ロックを取得できません${NC}" && exit 1
-  else
-    echo -e "${RED}エラー: 既に実行中です（ロック: ${LOCK_DIR}）${NC}" && exit 1
+# 並行実行防止（実行ユーザーのホーム配下に置き、他ユーザーによる先取りを防ぐ）
+if command -v flock >/dev/null 2>&1; then
+  # flock はプロセス終了時（異常終了・SIGKILL を含む）にカーネルが自動で解除するため、
+  # 古いロックが残らず、自動解除処理による競合も発生しない（CloudShell / Amazon Linux など）
+  LOCK_FILE="${HOME}/.rds_ri_purchase.lock"
+  exec 9>"$LOCK_FILE"
+  if ! flock -n 9; then
+    echo -e "${RED}エラー: 既に実行中です（ロック: ${LOCK_FILE}）${NC}" && exit 1
   fi
+else
+  # flock がない環境（macOS など）は mkdir で排他する。
+  # 他プロセスのロックを誤って削除しないよう、古いロックの自動解除は行わない
+  LOCK_DIR="${HOME}/.rds_ri_purchase_lock"
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    echo -e "${RED}エラー: 既に実行中か、前回の異常終了でロックが残っています（ロック: ${LOCK_DIR}）${NC}"
+    echo -e "${YELLOW}他に実行中のプロセスがないことを確認のうえ、rm -rf \"${LOCK_DIR}\" で削除してから再実行してください${NC}"
+    exit 1
+  fi
+  trap 'rm -rf "$LOCK_DIR"' EXIT
 fi
-echo "$$" > "$LOCK_DIR/pid"
-trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
+# Ctrl+C / TERM では処理を継続せず終了する（EXIT トラップでロックを解除）
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 echo -e "${YELLOW}サンプルスクリプト - 使用は自己責任でお願いします${NC}\n"
 
