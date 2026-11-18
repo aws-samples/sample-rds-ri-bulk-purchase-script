@@ -28,8 +28,7 @@ ap-northeast-1,Aurora,db.r5.large,aurora-mysql,no,3,3,No Upfront
   - Oracle: oracle-se2, oracle-se2-byol, oracle-ee-byol（Oracle EE は BYOL のみ）
   - SQL Server: sqlserver-ee, sqlserver-se, sqlserver-web（ライセンス込みのみ）
   - Db2: db2-ae, db2-ae-byol, db2-se, db2-se-byol
-  - ※ SQL Server Express (sqlserver-ex) はRI非対応のため使用不可
-  - ※ RDS Custom (custom-*) はRI非対応のため使用不可
+  - ※ SQL Server Express (sqlserver-ex) と RDS Custom (custom-*) は本スクリプトの対象外です（RI 非対応ではなく、東京リージョンなどでは RI が提供されています。購入する場合はマネジメントコンソール等をご利用ください）
 - `multi_az`: yes または no（RDS では必須。Aurora の場合は無視、空欄も可）
 - `quantity`: 購入数量（上限: 50）
 - `duration`: 1 または 3（年）
@@ -81,7 +80,7 @@ cat ri_purchase_result_*.txt
 - **データ行数上限超過** → エラーメッセージ表示後終了
 - **不正なインスタンスクラス形式** → 該当行をスキップ
 - **無効なエンジン名** → 該当行をスキップ
-- **RI非対応エンジン（sqlserver-ex, custom-*）** → 明確な理由を表示してスキップ
+- **本スクリプト対象外のエンジン（sqlserver-ex, custom-*）** → 理由を表示してスキップ
 - **リージョン制限違反** → 該当行をスキップ
 - **支払いオプション制限違反** → 該当行をスキップ
 - **無効な数量/期間** → 該当行をスキップ

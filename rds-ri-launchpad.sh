@@ -53,8 +53,8 @@ validate_line() {
   [[ ! "$instance_class" =~ ^db\.[a-z0-9]+\.[a-z0-9]+$ ]] && echo "インスタンスクラス形式が無効: $instance_class" && return 1
 
   # RI購入対応エンジンのみ許可
-  # - sqlserver-ex (Express) はRI非対応のため除外
-  # - custom-* (RDS Custom) はRI非対応のため除外
+  # - sqlserver-ex (Express) と custom-* (RDS Custom) は本スクリプトの対象外として除外
+  #   （RI 非対応ではない。東京リージョンなどでは RI が提供されているが、本スクリプトでは扱わない）
   case "$engine" in
     aurora-mysql|aurora-postgresql|mysql|postgresql|mariadb) ;;
     oracle-se2|oracle-se2-byol|oracle-ee-byol) ;;
@@ -62,8 +62,8 @@ validate_line() {
     sqlserver-ee|sqlserver-se|sqlserver-web) ;;
     sqlserver-ee-byol|sqlserver-se-byol) echo "RI非対応: RDS for SQL Server にBYOLのRIはありません: $engine" && return 1 ;;
     db2-ae|db2-ae-byol|db2-se|db2-se-byol) ;;
-    sqlserver-ex) echo "RI非対応: SQL Server Express はRI購入の対象外です" && return 1 ;;
-    custom-*) echo "RI非対応: RDS Custom ($engine) はRI購入の対象外です" && return 1 ;;
+    sqlserver-ex) echo "対象外: SQL Server Express は本スクリプトの対象外です" && return 1 ;;
+    custom-*) echo "対象外: RDS Custom ($engine) は本スクリプトの対象外です" && return 1 ;;
     *) echo "エンジン名が無効: $engine" && return 1 ;;
   esac
 
