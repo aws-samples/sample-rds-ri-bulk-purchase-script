@@ -25,12 +25,11 @@ ap-northeast-1,Aurora,db.r5.large,aurora-mysql,no,3,3,No Upfront
 - `instance_class`: db.xxx.xxx 形式
 - `engine`: 以下のいずれか
   - OSS系: aurora-mysql, aurora-postgresql, mysql, postgresql, mariadb
-  - Oracle: oracle-se2, oracle-ee, oracle-se2-byol, oracle-ee-byol
-  - SQL Server: sqlserver-ee, sqlserver-se, sqlserver-web, sqlserver-ee-byol, sqlserver-se-byol
+  - Oracle: oracle-se2, oracle-se2-byol, oracle-ee-byol（Oracle EE は BYOL のみ）
+  - SQL Server: sqlserver-ee, sqlserver-se, sqlserver-web（ライセンス込みのみ）
   - Db2: db2-ae, db2-ae-byol, db2-se, db2-se-byol
-  - ※ SQL Server Express (sqlserver-ex) はRI非対応のため使用不可
-  - ※ RDS Custom (custom-*) はRI非対応のため使用不可
-- `multi_az`: yes または no（Aurora の場合は無視）
+  - ※ SQL Server Express (sqlserver-ex) と RDS Custom (custom-*) は本スクリプトの対象外です（RI 非対応ではなく、東京リージョンなどでは RI が提供されています。購入する場合はマネジメントコンソール等をご利用ください）
+- `multi_az`: yes または no（RDS では必須。Aurora の場合は無視、空欄も可）
 - `quantity`: 購入数量（上限: 50）
 - `duration`: 1 または 3（年）
 - `payment_option`: No Upfront のみ
@@ -60,7 +59,7 @@ cat ri_purchase_result_*.txt
 
 - **リージョン:** 東京（ap-northeast-1）、大阪（ap-northeast-3）のみ
 - **支払いオプション:** No Upfront のみ
-- **並行実行:** 同じ入力ファイルでの並行実行は不可（ロックファイル機構）
+- **並行実行:** 同じユーザーによる同時実行は不可（flock、flock がない環境では mkdir によるロック）
 - **データ行数:** 1回の実行あたり最大100行
 
 ## セキュリティ機能
@@ -81,7 +80,7 @@ cat ri_purchase_result_*.txt
 - **データ行数上限超過** → エラーメッセージ表示後終了
 - **不正なインスタンスクラス形式** → 該当行をスキップ
 - **無効なエンジン名** → 該当行をスキップ
-- **RI非対応エンジン（sqlserver-ex, custom-*）** → 明確な理由を表示してスキップ
+- **本スクリプト対象外のエンジン（sqlserver-ex, custom-*）** → 理由を表示してスキップ
 - **リージョン制限違反** → 該当行をスキップ
 - **支払いオプション制限違反** → 該当行をスキップ
 - **無効な数量/期間** → 該当行をスキップ
@@ -121,8 +120,10 @@ cat ri_purchase_result_*.txt
 - その場合はCSVファイルを分割し、複数回に分けて実行してください
 
 ### ロックファイルエラー
+CloudShell など flock がある環境では、プロセス終了時にロックが自動で解除されるため対応は不要です。
+flock がない環境（macOS など）で異常終了後にロックが残った場合は、他に実行中のプロセスがないことを確認のうえ削除してください。
 bash
-rm -rf /tmp/rds_ri_purchase_lock
+rm -rf ~/.rds_ri_purchase_lock
 
 ### AWS CLI エラー
 bash
